@@ -1,0 +1,16 @@
+# Install all at once: pip install -r requirements.txt
+# Then run the app:   streamlit run src/pipeline_app.py
+streamlit>=1.35
+bertopic>=0.16
+sentence-transformers>=3.0
+umap-learn>=0.5
+scikit-learn>=1.4
+pandas>=2.2
+pyarrow>=15
+nltk>=3.8
+openpyxl>=3.1
+hdbscan>=0.8
+setfit>=1.0.3
+transformers==4.41.2
+tokenizers==0.19.1
+ggrepel

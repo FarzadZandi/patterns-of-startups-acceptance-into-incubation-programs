@@ -1,0 +1,413 @@
+---
+title: "Startup Incubation Outcomes: A Fuzzy-Set QCA of Campus Founders"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(QCA)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(dplyr)
+
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5,
+  dpi = 150
+)
+
+# APA-style kable for HTML
+fmt_tbl <- function(x, caption, digits = 3) {
+  kable(x, digits = digits, caption = caption, format = "html") %>%
+    kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed", "bordered"),
+      full_width  = FALSE,
+      font_size   = 13,
+      position    = "center"
+    )
+}
+
+# Extract data frame from any QCA result object
+qca_df <- function(x) {
+  if (!is.null(x$IC) && !is.null(x$IC$incl.cov) &&
+      is.data.frame(x$IC$incl.cov))   return(x$IC$incl.cov)
+  if (!is.null(x$incl.cov) && is.data.frame(x$incl.cov))
+                                        return(x$incl.cov)
+  if (is.data.frame(x))                 return(x)
+  data.frame(Output = capture.output(print(x)), stringsAsFactors = FALSE)
+}
+
+# Extract data frame from a QCA_tt truth-table object
+tt_df <- function(x) {
+  raw <- tryCatch({
+    lst <- unclass(x)
+    if (is.list(lst) && is.data.frame(lst$tt)) lst$tt else NULL
+  }, error = function(e) NULL)
+  if (!is.null(raw)) return(raw)
+  if (is.data.frame(x)) return(x)
+  data.frame(Output = capture.output(print(x)), stringsAsFactors = FALSE)
+}
+
+# Parse solution terms from a QCA_min object for Figure 3
+sol_terms <- function(sol) {
+  terms <- unlist(sol$solution, recursive = TRUE, use.names = FALSE)
+  terms <- terms[is.character(terms)]
+  terms <- trimws(unlist(strsplit(terms, "\\+")))
+  unique(terms[nzchar(terms)])
+}
+
+# Compute fuzzy AND (minimum) membership for a solution term
+term_membership <- function(data, term) {
+  parts <- trimws(unlist(strsplit(term, "\\*")))
+  mlist <- lapply(parts, function(p) {
+    p     <- gsub("`", "", p, fixed = TRUE)
+    neg   <- grepl("^~", p)
+    cname <- sub("^~", "", p)
+    if (!cname %in% names(data)) return(rep(NA_real_, nrow(data)))
+    v <- data[[cname]]
+    if (neg) 1 - v else v
+  })
+  if (!length(mlist)) return(rep(NA_real_, nrow(data)))
+  do.call(pmin, c(mlist, na.rm = FALSE))
+}
+
+apa_theme <- theme_classic(base_size = 12) +
+  theme(panel.grid    = element_blank(),
+        strip.background = element_blank(),
+        strip.text    = element_text(face = "bold"),
+        legend.position = "bottom")
+```
+
+# 1. Setup and Data
+
+```{r load_data}
+d <- read.csv("../data/processed/qca_calibrated.csv",
+              row.names = "startup_id")
+```
+
+The analytic sample contains **`r nrow(d)` startups**: `r sum(d$decision=="Accepted")` accepted and `r sum(d$decision=="Rejected")` rejected cases from Campus Founders batches 3–5. All fuzzy set memberships range from 0 (full non-membership) to 1 (full membership), with the 0.5 crossover representing theoretical ambiguity.
+
+# 2. Calibration
+
+```{r calibrate}
+# BERTopic raw topic shares are all below 0.5 — recalibrate with direct method
+d$T_testing_f  <- calibrate(d$T_testing,  type="fuzzy", method="direct",
+                             thresholds=c(0.0085, 0.0286, 0.0635))
+d$T_customer_f <- calibrate(d$T_customer, type="fuzzy", method="direct",
+                             thresholds=c(0.0386, 0.0859, 0.1812))
+d$T_market_f   <- calibrate(d$T_market,   type="fuzzy", method="direct",
+                             thresholds=c(0.0283, 0.0619, 0.1341))
+d$T_revenue_f  <- calibrate(d$T_revenue,  type="fuzzy", method="direct",
+                             thresholds=c(0.0141, 0.0578, 0.1402))
+
+conds_core <- c("PA_fuzzy","SF_fuzzy","TGB_f","TGT_f","TGR_f",
+                "TEAM_f","PLAT_f","B2B_f")
+conds_ext  <- c("PA_fuzzy","SF_fuzzy","TGT_f","TGR_f",
+                "TEAM_f","PLAT_f","T_testing_f")
+```
+
+## Table 1: Descriptive statistics of all fuzzy conditions
+
+```{r table01}
+all_conds <- c(conds_core,
+               "T_testing_f","T_customer_f","T_market_f","T_revenue_f")
+desc <- data.frame(
+  Condition = all_conds,
+  Min  = sapply(d[all_conds], min,  na.rm=TRUE),
+  Mean = sapply(d[all_conds], mean, na.rm=TRUE),
+  Max  = sapply(d[all_conds], max,  na.rm=TRUE),
+  SD   = sapply(d[all_conds], sd,   na.rm=TRUE),
+  n_above_0.5 = sapply(d[all_conds], function(x) sum(x >= 0.5)),
+  row.names = NULL
+)
+fmt_tbl(desc,
+  "Table 1. Descriptive Statistics of Calibrated Fuzzy Conditions (N = 70)")
+```
+
+## Figure 1: Distribution of PA and SF by decision
+
+```{r figure01, fig.cap="Figure 1. Distribution of PA and SF fuzzy scores by acceptance decision."}
+fig1 <- rbind(
+  data.frame(Score=d$PA_fuzzy, Condition="Problem Articulation (PA)",
+             Decision=d$decision),
+  data.frame(Score=d$SF_fuzzy, Condition="Solution Fit (SF)",
+             Decision=d$decision)
+) %>% count(Condition, Score, Decision)
+
+ggplot(fig1, aes(x=factor(Score), y=n, fill=Decision)) +
+  geom_col(position="dodge", colour="black", linewidth=0.2) +
+  facet_wrap(~Condition, scales="free_x") +
+  scale_fill_grey(start=0.25, end=0.75) +
+  labs(x="Fuzzy score", y="Number of startups", fill="Decision") +
+  apa_theme
+```
+
+## Figure 2: Outcome distributions
+
+```{r figure02, fig.cap="Figure 2. Distribution of the Z&Z belief-challenge ladder outcome. The dashed line marks the 0.5 QCA crossover."}
+ggplot(d, aes(x=OUTCOME_ladder, fill=decision)) +
+  geom_histogram(binwidth=0.1, boundary=0,
+                 position="identity", alpha=0.65, colour="black") +
+  geom_vline(xintercept=0.5, linetype="dashed", linewidth=0.8) +
+  annotate("text", x=0.68, y=Inf, vjust=2, size=3.8,
+           label=sprintf("n = %d above 0.5", sum(d$OUTCOME_ladder > 0.5))) +
+  scale_fill_grey(start=0.25, end=0.75) +
+  labs(x="Feedback challenge ladder membership",
+       y="Count of startups", fill="Decision") +
+  apa_theme
+```
+
+# 3. Analysis A — Acceptance Outcome
+
+## 3.1 Necessity Analysis
+
+```{r nec_accept}
+nec_a <- superSubset(d, outcome="OUTCOME_accept", conditions=conds_core,
+                     relation="necessity", incl.cut=0.90, cov.cut=0.50)
+```
+
+```{r table02}
+fmt_tbl(qca_df(nec_a),
+  "Table 2. Necessity Analysis: Acceptance Outcome (incl.cut = 0.90, cov.cut = 0.50)")
+```
+
+## Figure 3: Necessity XY plots
+
+```{r figure03, fig.height=7, fig.cap="Figure 3. Necessity XY plots for the eight core conditions. Cases above the diagonal indicate the condition is a subset of the outcome."}
+fig3 <- do.call(rbind, lapply(conds_core, function(cn) {
+  data.frame(Condition=cn, Membership=d[[cn]],
+             Outcome=d$OUTCOME_accept, Decision=d$decision)
+}))
+ggplot(fig3, aes(x=Membership, y=Outcome, colour=Decision)) +
+  geom_abline(slope=1, intercept=0, linetype="dashed", colour="black") +
+  geom_point(alpha=0.7, size=1.8) +
+  geom_smooth(method="loess", se=FALSE, linewidth=0.6) +
+  facet_wrap(~Condition, ncol=4) +
+  coord_equal(xlim=c(0,1), ylim=c(0,1)) +
+  scale_colour_grey(start=0.1, end=0.65) +
+  labs(x="Condition membership", y="Acceptance membership",
+       colour="Decision") +
+  apa_theme
+```
+
+## 3.2 Truth Table
+
+```{r tt_accept}
+tt_accept <- truthTable(d, outcome="OUTCOME_accept", conditions=conds_core,
+                        incl.cut=0.80, n.cut=1,
+                        show.cases=TRUE, sort.by="incl,n")
+```
+
+```{r table03}
+fmt_tbl(tt_df(tt_accept),
+  "Table 3. Truth Table: Acceptance Outcome (incl.cut = 0.80, n.cut = 1)")
+```
+
+## 3.3 Parsimonious Solution
+
+```{r sol_pars}
+sol_pars <- QCA::minimize(tt_accept, details=TRUE, include="?")
+```
+
+```{r table04}
+fmt_tbl(qca_df(sol_pars),
+  "Table 4. Boolean Minimization: Parsimonious Solution — Acceptance Outcome")
+```
+
+## 3.4 Intermediate Solution
+
+```{r sol_inter}
+sol_inter <- QCA::minimize(tt_accept, details=TRUE, include="?",
+  dir.exp=list(PA_fuzzy=1, SF_fuzzy=1, TGB_f=1, TGT_f=1,
+               TGR_f=1, TEAM_f=1, PLAT_f=1, B2B_f=1))
+```
+
+```{r table05}
+fmt_tbl(qca_df(sol_inter),
+  "Table 5. Boolean Minimization: Intermediate Solution — Acceptance Outcome")
+```
+
+## Figure 4: Sufficiency XY plots for solution paths
+
+```{r figure04, fig.cap="Figure 4. Sufficiency XY plots for intermediate solution paths. Cases labeled more than 0.2 from the diagonal are deviant cases."}
+terms <- sol_terms(sol_inter)
+if (length(terms) == 0) terms <- "No_solution"
+
+fig4 <- do.call(rbind, lapply(terms, function(tm) {
+  memb <- term_membership(d, tm)
+  data.frame(startup=rownames(d), Solution=tm,
+             Membership=memb, Outcome=d$OUTCOME_accept,
+             Decision=d$decision,
+             Outlier=abs(memb - d$OUTCOME_accept) > 0.2)
+}))
+
+ggplot(fig4, aes(x=Membership, y=Outcome, colour=Decision)) +
+  geom_abline(slope=1, intercept=0, linetype="dashed", colour="black") +
+  geom_point(alpha=0.8, size=2) +
+  ggrepel::geom_text_repel(
+    data=subset(fig4, Outlier),
+    aes(label=startup), colour="black",
+    size=2.8, max.overlaps=20) +
+  facet_wrap(~Solution) +
+  coord_equal(xlim=c(0,1), ylim=c(0,1)) +
+  scale_colour_grey(start=0.1, end=0.65) +
+  labs(x="Solution-term membership", y="Acceptance membership",
+       colour="Decision") +
+  apa_theme
+```
+
+## 3.5 Rejection Paths
+
+```{r rej_paths}
+d$REJ <- 1 - d$OUTCOME_accept
+tt_rej <- truthTable(d, outcome="REJ", conditions=conds_core,
+                     incl.cut=0.80, n.cut=1,
+                     show.cases=TRUE, sort.by="incl,n")
+sol_rej <- QCA::minimize(tt_rej, details=TRUE, include="?")
+```
+
+```{r table06}
+fmt_tbl(qca_df(sol_rej),
+  "Table 6. Boolean Minimization: Rejection Paths (~OUTCOME_accept)")
+```
+
+# 4. Analysis B — Feedback Challenge Ladder
+
+## 4.1 Necessity Analysis
+
+```{r nec_ladder}
+nec_b <- superSubset(d, outcome="OUTCOME_ladder", conditions=conds_core,
+                     relation="necessity", incl.cut=0.85, cov.cut=0.40)
+```
+
+```{r table07}
+fmt_tbl(qca_df(nec_b),
+  "Table 7. Necessity Analysis: Feedback Challenge Ladder (incl.cut = 0.85)")
+```
+
+## 4.2 Truth Table and Sufficiency
+
+```{r ladder_suf}
+tt_ladder  <- truthTable(d, outcome="OUTCOME_ladder", conditions=conds_core,
+                         incl.cut=0.75, n.cut=1,
+                         show.cases=TRUE, sort.by="incl,n")
+sol_ladder <- QCA::minimize(tt_ladder, details=TRUE, include="?")
+```
+
+```{r table08}
+fmt_tbl(qca_df(sol_ladder),
+  "Table 8. Sufficiency Analysis: Feedback Challenge Ladder")
+```
+
+## 4.3 Endorsing Feedback Paths
+
+```{r endorse_paths}
+d$ENDORSE <- 1 - d$OUTCOME_ladder
+tt_end <- tryCatch(
+  truthTable(d, outcome="ENDORSE", conditions=conds_core,
+             incl.cut=0.80, n.cut=1,
+             show.cases=TRUE, sort.by="incl,n"),
+  error = function(e) NULL
+)
+sol_end <- if (!is.null(tt_end)) {
+  tryCatch(QCA::minimize(tt_end, details=TRUE, include="?"),
+           error = function(e) NULL)
+} else {
+  NULL
+}
+```
+
+```{r table09}
+if (!is.null(sol_end)) {
+  fmt_tbl(qca_df(sol_end),
+    "Table 9. Boolean Minimization: Endorsing Feedback Paths (~OUTCOME_ladder)")
+} else {
+  cat("*No unique minimization found for endorsing paths — all configurations used.*")
+}
+```
+
+# 5. Analysis C — Robustness with BERTopic T_testing
+
+## 5.1 Necessity of T_testing_f
+
+```{r c1_nec}
+pof_test <- pof(setms=d[,"T_testing_f",drop=FALSE],
+                outcome="OUTCOME_accept", data=d, relation="necessity")
+```
+
+```{r table10}
+fmt_tbl(qca_df(pof_test),
+  "Table 10. Necessity Analysis: BERTopic Testing Condition (T_testing_f)")
+```
+
+## 5.2 Extended Truth Table and Minimization
+
+```{r ext_tt}
+tt_ext  <- truthTable(d, outcome="OUTCOME_accept", conditions=conds_ext,
+                      incl.cut=0.80, n.cut=1,
+                      show.cases=TRUE, sort.by="incl,n")
+sol_ext <- QCA::minimize(tt_ext, details=TRUE, include="?")
+```
+
+```{r table11}
+fmt_tbl(qca_df(sol_ext),
+  "Table 11. Robustness Check: Extended Conditions Including T_testing_f")
+```
+
+# 6. Summary
+
+## Table 12: Per-condition necessity consistency and coverage
+
+```{r table12}
+summ <- do.call(rbind, lapply(c(conds_core, "T_testing_f"), function(cn) {
+  r  <- pof(setms=d[,cn,drop=FALSE], outcome="OUTCOME_accept",
+            data=d, relation="necessity")
+  nms <- names(r$incl.cov)
+  ci  <- if ("incl"  %in% nms) "incl"  else "inclN"
+  cv  <- if ("cov.r" %in% nms) "cov.r" else "covN"
+  data.frame(Condition=cn,
+             Consistency=r$incl.cov[[ci]],
+             Coverage   =r$incl.cov[[cv]])
+}))
+row.names(summ) <- NULL
+
+fmt_tbl(summ,
+  "Table 12. Per-Condition Necessity Consistency and Coverage (OUTCOME_accept)")
+```
+
+## Figure 5: Condition profiles by decision
+
+```{r figure05, fig.height=6, fig.cap="Figure 5. Mean fuzzy set membership for each core condition, split by acceptance decision."}
+fig5 <- d %>%
+  select(decision, all_of(conds_core)) %>%
+  tidyr::pivot_longer(-decision,
+                      names_to="Condition",
+                      values_to="Membership") %>%
+  group_by(decision, Condition) %>%
+  summarise(Mean=mean(Membership), SE=sd(Membership)/sqrt(n()), .groups="drop")
+
+ggplot(fig5, aes(x=Condition, y=Mean, fill=decision)) +
+  geom_col(position=position_dodge(0.7), width=0.65,
+           colour="black", linewidth=0.2) +
+  geom_errorbar(aes(ymin=Mean-SE, ymax=Mean+SE),
+                position=position_dodge(0.7), width=0.25) +
+  scale_fill_grey(start=0.25, end=0.75) +
+  scale_y_continuous(limits=c(0,1)) +
+  geom_hline(yintercept=0.5, linetype="dashed", colour="grey40") +
+  labs(x="Condition", y="Mean fuzzy membership ± SE", fill="Decision") +
+  apa_theme +
+  theme(axis.text.x=element_text(angle=35, hjust=1))
+```

@@ -1,0 +1,646 @@
+---
+title: "Startup Incubation Outcomes: A Fuzzy-Set QCA of Campus Founders"
+author: ''
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    df_print: paged
+bibliography: references.bib
+csl: apa.csl
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+# Check and install required packages if missing
+required_pkgs <- c("QCA", "knitr", "kableExtra", "ggplot2",
+                   "dplyr", "tidyr", "ggrepel")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    message("Installing missing package: ", pkg)
+    install.packages(pkg, repos = "https://cloud.r-project.org",
+                     quiet = TRUE)
+  }
+}
+
+library(QCA)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggrepel)
+
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5,
+  dpi = 150
+)
+
+fmt_tbl <- function(x, caption, digits = 3) {
+  kable(x, digits = digits, caption = caption, format = "html") %>%
+    kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed", "bordered"),
+      full_width  = FALSE,
+      font_size   = 13,
+      position    = "center"
+    )
+}
+
+qca_df <- function(x) {
+  if (!is.null(x$IC) && !is.null(x$IC$incl.cov) &&
+      is.data.frame(x$IC$incl.cov))   return(x$IC$incl.cov)
+  if (!is.null(x$incl.cov) && is.data.frame(x$incl.cov))
+                                        return(x$incl.cov)
+  if (is.data.frame(x))                 return(x)
+  data.frame(Output = capture.output(print(x)), stringsAsFactors = FALSE)
+}
+
+tt_df <- function(x) {
+  raw <- tryCatch({
+    lst <- unclass(x)
+    if (is.list(lst) && is.data.frame(lst$tt)) lst$tt else NULL
+  }, error = function(e) NULL)
+  if (!is.null(raw)) return(raw)
+  if (is.data.frame(x)) return(x)
+  data.frame(Output = capture.output(print(x)), stringsAsFactors = FALSE)
+}
+
+sol_terms <- function(sol) {
+  terms <- unlist(sol$solution, recursive = TRUE, use.names = FALSE)
+  terms <- terms[is.character(terms)]
+  terms <- trimws(unlist(strsplit(terms, "\\+")))
+  unique(terms[nzchar(terms)])
+}
+
+term_membership <- function(data, term) {
+  parts <- trimws(unlist(strsplit(term, "\\*")))
+  mlist <- lapply(parts, function(p) {
+    p     <- gsub("`", "", p, fixed = TRUE)
+    neg   <- grepl("^~", p)
+    cname <- sub("^~", "", p)
+    if (!cname %in% names(data)) return(rep(NA_real_, nrow(data)))
+    v <- data[[cname]]
+    if (neg) 1 - v else v
+  })
+  if (!length(mlist)) return(rep(NA_real_, nrow(data)))
+  do.call(pmin, c(mlist, na.rm = FALSE))
+}
+
+apa_theme <- theme_classic(base_size = 12) +
+  theme(panel.grid       = element_blank(),
+        strip.background = element_blank(),
+        strip.text       = element_text(face = "bold"),
+        legend.position  = "bottom")
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+## 1. Setup and Data
+
+```{r original_setup_data, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# =============================================================================
+# Campus Founders — fs-QCA
+# Outcome 1: OUTCOME_accept   (fuzzy: 0.05=Rejected, 0.95=Accepted)
+# Outcome 2: OUTCOME_ladder   (Z&Z belief-challenge: 0=endorsed, 1=disconfirmed)
+# =============================================================================
+
+library(QCA)
+
+# --- Load data ----------------------------------------------------------------
+d <- read.csv("../data/processed/qca_calibrated.csv", row.names = "startup_id")
+cat("Cases loaded:", nrow(d), "\n")
+cat("Accepted:", sum(d$decision == "Accepted"),
+    " | Rejected:", sum(d$decision == "Rejected"), "\n\n")
+```
+
+The analytic sample contains `r nrow(d)` startups, including `r sum(d$decision == "Accepted")` accepted and `r sum(d$decision == "Rejected")` rejected cases. All set memberships are interpreted on the conventional fuzzy-set scale from full nonmembership to full membership.
+
+## 2. Calibration (BERTopic recalibration block)
+
+```{r original_bertopic_calibration, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# --- Step 1: Recalibrate BERTopic topic shares --------------------------------
+# Raw shares are all below 0.5 — must recalibrate with direct method before QCA.
+cat("=== BERTopic conditions after recalibration ===\n")
+for (col in c("T_testing_f","T_customer_f","T_market_f","T_revenue_f")) {
+  cat(sprintf("  %-16s: mean=%.3f, n>=0.5=%d\n",
+              col, mean(d[[col]]), sum(d[[col]] >= 0.5)))
+}
+
+# --- Condition sets -----------------------------------------------------------
+conds_core <- c("PA_fuzzy","SF_fuzzy","TGB_f","TGT_f","TGR_f",
+                "TEAM_f","PLAT_f","B2B_f")
+conds_ext  <- c("PA_fuzzy","SF_fuzzy","TGT_f","TGR_f",
+                "TEAM_f","PLAT_f","T_testing_f")
+```
+
+```{r table_01_descriptives, echo=TRUE, message=FALSE, warning=FALSE}
+descriptive_conditions <- c(
+  conds_core,
+  "T_testing_f", "T_customer_f", "T_market_f", "T_revenue_f"
+)
+descriptive_table <- data.frame(
+  Condition = descriptive_conditions,
+  Min = vapply(d[descriptive_conditions], min, numeric(1), na.rm = TRUE),
+  Mean = vapply(d[descriptive_conditions], mean, numeric(1), na.rm = TRUE),
+  Max = vapply(d[descriptive_conditions], max, numeric(1), na.rm = TRUE),
+  SD = vapply(d[descriptive_conditions], sd, numeric(1), na.rm = TRUE),
+  row.names = NULL
+)
+fmt_tbl(
+  descriptive_table,
+  "Table 1. Descriptive Statistics and Distribution of Fuzzy Conditions"
+)
+```
+
+*[Report results here: e.g., "Table 1 summarizes the calibrated distributions of all core and BERTopic-derived conditions. The observed ranges and standard deviations should be discussed with attention to set dispersion and limited diversity."]*
+
+```{r figure_01_condition_distributions, echo=TRUE, message=FALSE, warning=FALSE, fig.cap="Figure 1. Distribution of calibrated Problem Articulation (PA) and Solution Fit (SF) scores by acceptance decision."}
+figure_1_data <- rbind(
+  data.frame(
+    Score = d$PA_fuzzy,
+    Condition = "Problem Articulation",
+    Decision = d$decision
+  ),
+  data.frame(
+    Score = d$SF_fuzzy,
+    Condition = "Solution Fit",
+    Decision = d$decision
+  )
+) %>%
+  count(Condition, Score, Decision, name = "Startups")
+
+ggplot(
+  figure_1_data,
+  aes(x = factor(Score), y = Startups, fill = Decision)
+) +
+  geom_col(position = "dodge", color = "black", linewidth = 0.2) +
+  facet_wrap(~Condition, scales = "free_x") +
+  labs(
+    x = "Fuzzy score",
+    y = "Count of startups",
+    fill = "Decision"
+  ) +
+  scale_fill_grey(start = 0.25, end = 0.75) +
+  apa_theme
+```
+
+*[Report results here: e.g., "Figure 1 displays the distribution of PA and SF calibration levels by decision. Differences in the concentration of accepted and rejected cases across fuzzy scores provide an initial descriptive indication of potential sufficiency patterns."]*
+
+## 3. Analysis A — Acceptance Outcome
+
+```{r original_analysis_a_intro_a1, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# =============================================================================
+# ANALYSIS A: OUTCOME_accept (27 accepted / 43 rejected)
+# =============================================================================
+cat("\n=============================================================\n")
+cat("ANALYSIS A — OUTCOME: ACCEPTANCE\n")
+cat("=============================================================\n")
+
+cat("\n--- A1. Necessity (incl.cut=0.90) ---\n")
+print(superSubset(d, outcome="OUTCOME_accept", conditions=conds_core,
+                  relation="necessity", incl.cut=0.90, cov.cut=0.50))
+```
+
+```{r table_02_acceptance_necessity, echo=TRUE, message=FALSE, warning=FALSE}
+necessity_accept <- QCA::superSubset(
+  data = d,
+  outcome = "OUTCOME_accept",
+  conditions = conds_core,
+  relation = "necessity",
+  incl.cut = 0.90,
+  cov.cut = 0.50
+)
+
+fmt_tbl(
+  qca_df(necessity_accept),
+  "Table 2. Necessity Analysis: Acceptance Outcome"
+)
+```
+
+*[Report results here: e.g., "Table 2 shows that condition X meets the necessity threshold (consistency = ?, coverage = ?). This indicates that X is a necessary condition for acceptance."]*
+
+```{r figure_02_acceptance_necessity, echo=TRUE, message=FALSE, warning=FALSE, fig.cap="Figure 2. Necessity XY plots for eight conditions against the acceptance outcome. Points above the diagonal indicate cases where the condition is a subset of the outcome (necessity)."}
+figure_2_data <- do.call(
+  rbind,
+  lapply(conds_core, function(condition) {
+    data.frame(
+      Condition = condition,
+      Membership = d[[condition]],
+      Outcome = d$OUTCOME_accept,
+      Decision = d$decision
+    )
+  })
+)
+
+ggplot(
+  figure_2_data,
+  aes(x = Membership, y = Outcome, color = Decision)
+) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  geom_point(alpha = 0.75, size = 1.8) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 0.6) +
+  facet_wrap(~Condition, ncol = 4) +
+  coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(
+    x = "Condition membership",
+    y = "Acceptance outcome membership",
+    color = "Decision"
+  ) +
+  scale_color_grey(start = 0.2, end = 0.7) +
+  apa_theme
+```
+
+*[Report results here: e.g., "Figure 2 visualizes the necessity relation for each core condition. Conditions with most cases on or above the diagonal warrant closer examination alongside their consistency and coverage statistics."]*
+
+```{r original_analysis_a2, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- A2. Truth table ---\n")
+tt_accept <- truthTable(d, outcome="OUTCOME_accept", conditions=conds_core,
+                        incl.cut=0.80, n.cut=1, show.cases=TRUE, sort.by="incl,n")
+print(tt_accept)
+```
+
+```{r table_04_acceptance_truth_table, echo=TRUE, message=FALSE, warning=FALSE}
+fmt_tbl(
+  tt_df(tt_accept),
+  "Table 4. Truth Table: Acceptance Outcome"
+)
+```
+
+*[Report results here: e.g., "Table 4 lists the observed configurations and their consistency with acceptance. Configurations meeting the inclusion threshold are treated as sufficient rows for subsequent minimization."]*
+
+```{r original_analysis_a3, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- A3. Parsimonious solution ---\n")
+print(minimize(tt_accept, details=TRUE, include="?"))
+```
+
+```{r table_05_acceptance_parsimonious, echo=TRUE, message=FALSE, warning=FALSE}
+solution_accept_parsimonious <- minimize(
+  tt_accept,
+  details = TRUE,
+  include = "?"
+)
+fmt_tbl(
+  qca_df(solution_accept_parsimonious),
+  "Table 5. Boolean Minimization: Parsimonious Solution, Acceptance Outcome"
+)
+```
+
+*[Report results here: e.g., "Table 5 presents the parsimonious solution for acceptance. The reported formulas, consistency, and coverage indicate which simplified combinations are sufficient for the outcome."]*
+
+```{r original_analysis_a4, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- A4. Intermediate solution (all conditions expected positive) ---\n")
+print(minimize(tt_accept, details=TRUE, include="?",
+               dir.exp=list(PA_fuzzy=1,SF_fuzzy=1,TGB_f=1,TGT_f=1,
+                            TGR_f=1,TEAM_f=1,PLAT_f=1,B2B_f=1)))
+```
+
+```{r table_06_acceptance_intermediate, echo=TRUE, message=FALSE, warning=FALSE}
+solution_accept_intermediate <- minimize(
+  tt_accept,
+  details = TRUE,
+  include = "?",
+  dir.exp = list(
+    PA_fuzzy = 1, SF_fuzzy = 1, TGB_f = 1, TGT_f = 1,
+    TGR_f = 1, TEAM_f = 1, PLAT_f = 1, B2B_f = 1
+  )
+)
+fmt_tbl(
+  qca_df(solution_accept_intermediate),
+  "Table 6. Boolean Minimization: Intermediate Solution, Acceptance Outcome"
+)
+```
+
+*[Report results here: e.g., "Table 6 reports the intermediate solution using positive directional expectations. The solution paths should be interpreted by comparing their consistency, raw coverage, and unique coverage."]*
+
+```{r figure_03_solution_sufficiency, echo=TRUE, message=FALSE, warning=FALSE, fig.cap="Figure 3. Sufficiency XY plots for solution paths. Points below the diagonal indicate cases where the solution is a subset of the outcome (sufficiency)."}
+solution_terms <- sol_terms(solution_accept_intermediate)
+if (length(solution_terms) == 0) {
+  solution_terms <- "No solution term returned"
+}
+
+figure_3_data <- do.call(
+  rbind,
+  lapply(solution_terms, function(term) {
+    membership <- term_membership(d, term)
+    data.frame(
+      startup_id = row.names(d),
+      Solution = term,
+      Membership = membership,
+      Outcome = d$OUTCOME_accept,
+      Decision = d$decision,
+      Outlier = abs(membership - d$OUTCOME_accept) > 0.2
+    )
+  })
+)
+
+ggplot(
+  figure_3_data,
+  aes(x = Membership, y = Outcome, color = Decision)
+) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  geom_point(alpha = 0.8, size = 2) +
+  geom_text(
+    data = subset(figure_3_data, Outlier %in% TRUE),
+    aes(label = startup_id),
+    color = "black",
+    size = 2.6,
+    vjust = -0.6,
+    check_overlap = TRUE
+  ) +
+  facet_wrap(~Solution) +
+  coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(
+    x = "Solution-term membership",
+    y = "Acceptance outcome membership",
+    color = "Decision"
+  ) +
+  scale_color_grey(start = 0.2, end = 0.7) +
+  apa_theme
+```
+
+*[Report results here: e.g., "Figure 3 evaluates the sufficiency relation for each intermediate solution path. Cases substantially distant from the diagonal are labeled as potential deviant cases for further qualitative interpretation."]*
+
+```{r original_analysis_a5, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- A5. Rejection paths (~OUTCOME_accept) ---\n")
+d$REJ <- 1 - d$OUTCOME_accept
+tt_rej <- truthTable(d, outcome="REJ", conditions=conds_core,
+                     incl.cut=0.80, n.cut=1, show.cases=TRUE, sort.by="incl,n")
+print(minimize(tt_rej, details=TRUE, include="?"))
+```
+
+```{r table_07_rejection_paths, echo=TRUE, message=FALSE, warning=FALSE}
+solution_rejection <- minimize(tt_rej, details = TRUE, include = "?")
+fmt_tbl(
+  qca_df(solution_rejection),
+  "Table 7. Boolean Minimization: Rejection Paths"
+)
+```
+
+*[Report results here: e.g., "Table 7 presents configurations sufficient for rejection. These asymmetric paths should be interpreted independently rather than as simple inverses of the acceptance solution."]*
+
+### 3.6 Veto Condition Analysis
+
+*In fs-QCA, veto conditions are identified through two tests: (1) necessity for rejection — conditions whose absence is required for acceptance; (2) single-condition sufficiency for rejection — conditions that alone are sufficient to produce rejection regardless of other factors.*
+
+```{r veto_necessity}
+# Necessity for rejection: conditions required for ~OUTCOME_accept
+nec_rej <- superSubset(d, outcome="REJ", conditions=conds_core,
+                       relation="necessity",
+                       incl.cut=0.85, cov.cut=0.40)
+fmt_tbl(qca_df(nec_rej),
+  "Table 13. Necessity Analysis: Rejection Outcome — Veto Condition Candidates")
+```
+
+*Conditions meeting incl.cut ≥ 0.85 for necessity of rejection are candidates for veto status. A veto condition blocks acceptance regardless of the presence of other favorable conditions.*
+
+```{r veto_sufficiency}
+# Single-condition sufficiency for rejection
+# Test: is ~condition alone sufficient to produce rejection?
+veto_rows <- do.call(rbind, lapply(conds_core, function(cn) {
+  neg_cond <- 1 - d[[cn]]
+  r <- pof(setms = data.frame(neg_cond),
+           outcome = "REJ",
+           data    = d,
+           relation = "sufficiency")
+  nms <- names(r$incl.cov)
+  ci  <- if ("incl"  %in% nms) "incl"  else "inclS"
+  cv  <- if ("cov.r" %in% nms) "cov.r" else "covS"
+  data.frame(
+    Condition  = paste0("~", cn),
+    Consistency = round(r$incl.cov[[ci]], 3),
+    Coverage    = round(r$incl.cov[[cv]], 3),
+    Veto_status = ifelse(r$incl.cov[[ci]] >= 0.85,
+                         "Veto candidate", "Not a veto")
+  )
+}))
+row.names(veto_rows) <- NULL
+fmt_tbl(veto_rows,
+  "Table 14. Single-Condition Sufficiency for Rejection — Veto Test")
+```
+
+*A condition is classified as a veto when its negation shows sufficiency consistency ≥ 0.85 for rejection, meaning low membership in that condition reliably produces rejection regardless of other conditions.*
+
+## 4. Analysis B — Feedback Challenge Ladder
+
+```{r original_analysis_b_intro, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# =============================================================================
+# ANALYSIS B: OUTCOME_ladder (Z&Z feedback challenge)
+# =============================================================================
+cat("\n=============================================================\n")
+cat("ANALYSIS B — OUTCOME: Z&Z FEEDBACK CHALLENGE LADDER\n")
+cat("(14/70 cases above 0.5 — theoretically rich but low power)\n")
+cat("=============================================================\n")
+```
+
+```{r figure_04_feedback_ladder, echo=TRUE, message=FALSE, warning=FALSE, fig.cap="Figure 4. Distribution of the Z&Z belief-challenge ladder outcome. Values above 0.5 indicate high evaluator challenge."}
+ggplot(
+  d,
+  aes(x = OUTCOME_ladder, fill = decision)
+) +
+  geom_histogram(
+    binwidth = 0.1,
+    boundary = 0,
+    position = "identity",
+    alpha = 0.65,
+    color = "black"
+  ) +
+  geom_vline(xintercept = 0.5, linetype = "dashed", linewidth = 0.7) +
+  annotate(
+    "text",
+    x = 0.72,
+    y = Inf,
+    label = "n=14 above, n=56 below",
+    vjust = 1.5,
+    size = 3.5
+  ) +
+  labs(
+    x = "Feedback challenge ladder membership",
+    y = "Count of startups",
+    fill = "Decision"
+  ) +
+  scale_fill_grey(start = 0.25, end = 0.75) +
+  apa_theme
+```
+
+*[Report results here: e.g., "Figure 4 shows that relatively few cases exceed the 0.5 crossover threshold for high evaluator challenge. The skewed distribution limits statistical diversity but identifies a theoretically informative subset of highly challenged cases."]*
+
+```{r original_analysis_b1, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- B1. Necessity (incl.cut=0.85) ---\n")
+print(superSubset(d, outcome="OUTCOME_ladder_max", conditions=conds_core,
+                  relation="necessity", incl.cut=0.85, cov.cut=0.40))
+```
+
+```{r table_03_ladder_necessity, echo=TRUE, message=FALSE, warning=FALSE}
+necessity_ladder <- superSubset(
+  d,
+  outcome = "OUTCOME_ladder_max",
+  conditions = conds_core,
+  relation = "necessity",
+  incl.cut = 0.85,
+  cov.cut = 0.40
+)
+fmt_tbl(
+  qca_df(necessity_ladder),
+  "Table 3. Necessity Analysis: Feedback Challenge Ladder Outcome"
+)
+```
+
+*[Report results here: e.g., "Table 3 reports necessity relations for the feedback challenge ladder. Conditions meeting the specified consistency and coverage thresholds should be discussed as potential prerequisites for challenging feedback."]*
+
+```{r original_analysis_b2, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- B2. Truth table ---\n")
+tt_ladder <- truthTable(d, outcome="OUTCOME_ladder_max", conditions=conds_core,
+                        incl.cut=0.75, n.cut=1, show.cases=TRUE, sort.by="incl,n")
+print(tt_ladder)
+```
+
+```{r original_analysis_b3, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- B3. Sufficiency ---\n")
+print(minimize(tt_ladder, details=TRUE, include="?"))
+```
+
+```{r table_08_ladder_sufficiency, echo=TRUE, message=FALSE, warning=FALSE}
+solution_ladder <- minimize(tt_ladder, details = TRUE, include = "?")
+fmt_tbl(
+  qca_df(solution_ladder),
+  "Table 8. Sufficiency Analysis: Feedback Challenge Ladder"
+)
+```
+
+*[Report results here: e.g., "Table 8 summarizes configurations sufficient for elevated feedback challenge. The solution consistency and coverage statistics indicate the empirical relevance of each path despite the limited number of cases above the crossover."]*
+
+```{r original_analysis_b4, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+invisible(try({
+cat("\n--- B4. Endorsing feedback paths (~OUTCOME_ladder) ---\n")
+d$ENDORSE <- 1 - d$OUTCOME_ladder
+tt_end <- truthTable(d, outcome="ENDORSE", conditions=conds_core,
+                     incl.cut=0.80, n.cut=1, show.cases=TRUE, sort.by="incl,n")
+print(minimize(tt_end, details=TRUE, include="?"))
+}, silent = TRUE))
+```
+
+### 4.4 Robustness: mean-weight ladder
+
+*The mean-weight ladder (OUTCOME_ladder) distributes challenge across all active feedback codes. Fourteen of 70 startups exceed the 0.5 crossover under this operationalization, compared to 22 under the max-weight version above.*
+
+```{r ladder_robustness}
+tt_ladder_mean <- tryCatch(
+  truthTable(d, outcome="OUTCOME_ladder", conditions=conds_core,
+             incl.cut=0.75, n.cut=1, show.cases=TRUE, sort.by="incl,n"),
+  error = function(e) NULL
+)
+if (!is.null(tt_ladder_mean)) {
+  sol_mean <- tryCatch(
+    QCA::minimize(tt_ladder_mean, details=TRUE, include="?"),
+    error = function(e) NULL
+  )
+  if (!is.null(sol_mean)) {
+    fmt_tbl(qca_df(sol_mean),
+      "Table R1. Robustness: Sufficiency Analysis — Mean-Weight Ladder")
+  }
+}
+```
+
+## 5. Analysis C — Robustness with BERTopic Testing Condition
+
+```{r original_analysis_c1, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# =============================================================================
+# ANALYSIS C: ROBUSTNESS — BERTopic T_testing condition
+# =============================================================================
+cat("\n=============================================================\n")
+cat("ANALYSIS C — ROBUSTNESS WITH T_testing_f\n")
+cat("=============================================================\n")
+
+cat("\n--- C1. Necessity of T_testing_f ---\n")
+print(pof(setms=d[,"T_testing_f",drop=FALSE],
+          outcome="OUTCOME_accept", data=d, relation="necessity"))
+```
+
+```{r original_analysis_c2, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+cat("\n--- C2. Extended truth table ---\n")
+tt_ext <- truthTable(d, outcome="OUTCOME_accept", conditions=conds_ext,
+                     incl.cut=0.80, n.cut=1, show.cases=TRUE, sort.by="incl,n")
+print(minimize(tt_ext, details=TRUE, include="?"))
+```
+
+```{r table_09_robustness_extended, echo=TRUE, message=FALSE, warning=FALSE}
+solution_extended <- minimize(tt_ext, details = TRUE, include = "?")
+fmt_tbl(
+  qca_df(solution_extended),
+  "Table 9. Robustness Check: Extended Conditions with T_testing_f"
+)
+```
+
+*[Report results here: e.g., "Table 9 reports the robustness analysis after adding the recalibrated BERTopic testing condition. Similarity or divergence from the core solution should be evaluated in terms of solution structure, consistency, and coverage."]*
+
+## 6. Summary: Per-Condition Consistency and Coverage
+
+```{r original_summary, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# =============================================================================
+# SUMMARY: Per-condition necessity consistency & coverage
+# =============================================================================
+cat("\n=============================================================\n")
+cat("SUMMARY TABLE: Necessity consistency & coverage per condition\n")
+cat("=============================================================\n")
+cat(sprintf("%-18s %12s %10s\n","Condition","Consistency","Coverage"))
+for (cond in c(conds_core,"T_testing_f")) {
+  r <- pof(setms=d[,cond,drop=FALSE], outcome="OUTCOME_accept",
+           data=d, relation="necessity")
+  cat(sprintf("%-18s %12.3f %10.3f\n",
+              cond, r$incl.cov$incl, r$incl.cov$cov.r))
+}
+
+cat("\nfs-QCA complete.\n")
+```
+
+```{r table_10_condition_summary, echo=TRUE, message=FALSE, warning=FALSE}
+condition_summary <- do.call(
+  rbind,
+  lapply(c(conds_core, "T_testing_f"), function(cond) {
+    result <- pof(
+      setms = d[, cond, drop = FALSE],
+      outcome = "OUTCOME_accept",
+      data = d,
+      relation = "necessity"
+    )
+    metric_names <- names(result$incl.cov)
+    consistency_name <- if ("incl" %in% metric_names) "incl" else "inclN"
+    coverage_name <- if ("cov.r" %in% metric_names) "cov.r" else "covN"
+    data.frame(
+      Condition = cond,
+      Consistency = result$incl.cov[[consistency_name]],
+      Coverage = result$incl.cov[[coverage_name]]
+    )
+  })
+)
+row.names(condition_summary) <- NULL
+
+fmt_tbl(
+  condition_summary,
+  "Table 10. Per-Condition Consistency and Coverage"
+)
+```
+
+*[Report results here: e.g., "Table 10 compares necessity consistency and coverage across all core conditions and the BERTopic testing condition. These statistics provide a concise basis for identifying the strongest individual set relations with acceptance."]*
+
+## References
+
+::: {#refs}
+:::
+
+<!-- Add BibTeX entries to references.bib: QCA package citation (Dusa 2019), Ragin 2008, Zellweger & Zenger 2023, BERTopic (Grootendorst 2022), SetFit (Tunstall et al. 2022) -->

@@ -1,0 +1,38 @@
+# Confidential Campus Founders source data and all row-level derivatives.
+# These paths must never be committed.
+/data/
+/labels/
+/CF AIF Codebook.xlsx
+/CF AIF Results.xlsx
+
+# Rendered reports currently contain case-level Campus Founders identifiers.
+# Regenerate a separately anonymized/aggregate-only report before publishing.
+/qca/*.html
+/qca/*.tex
+
+# Local/vendor dependencies and downloaded model assets.
+/libs/
+/runs/
+
+# Python caches and local environments.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+
+# R session state and generated intermediates.
+.RData
+.Rhistory
+.Rproj.user/
+
+# Editor/OS files.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local notebook backups that may retain confidential cell output.
+*.private.ipynb
+*.private.ipynb.*
